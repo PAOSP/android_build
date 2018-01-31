@@ -16,9 +16,6 @@ ifneq ($(LOCAL_PREBUILT_JAVA_LIBRARIES),)
 $(error dont use LOCAL_PREBUILT_JAVA_LIBRARIES anymore LOCAL_PATH=$(LOCAL_PATH))
 endif
 
-# Not much sense to check build prebuilts
-LOCAL_DONT_CHECK_MODULE := true
-
 my_32_64_bit_suffix := $(if $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)IS_64_BIT),64,32)
 
 ifdef LOCAL_PREBUILT_MODULE_FILE
@@ -38,6 +35,8 @@ else
   endif
 endif
 
+LOCAL_CHECKED_MODULE := $(my_prebuilt_src_file)
+
 my_strip_module := $(firstword \
   $(LOCAL_STRIP_MODULE_$($(my_prefix)$(LOCAL_2ND_ARCH_VAR_PREFIX)ARCH)) \
   $(LOCAL_STRIP_MODULE))
@@ -46,9 +45,18 @@ my_pack_module_relocations := $(firstword \
   $(LOCAL_PACK_MODULE_RELOCATIONS))
 
 ifeq (SHARED_LIBRARIES,$(LOCAL_MODULE_CLASS))
-  # Put the built targets of all shared libraries in a common directory
-  # to simplify the link line.
-  OVERRIDE_BUILT_MODULE_PATH := $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)OUT_INTERMEDIATE_LIBRARIES)
+  # LOCAL_COPY_TO_INTERMEDIATE_LIBRARIES indicates that this prebuilt should be
+  # installed to the common directory of libraries. This is needed for the NDK
+  # shared libraries built by soong, as we build many different versions of each
+  # library (one for each API level). Since they all have the same basename,
+  # they'd clobber each other (as well as any platform libraries by the same
+  # name).
+  ifneq ($(LOCAL_COPY_TO_INTERMEDIATE_LIBRARIES),false)
+    # Put the built targets of all shared libraries in a common directory
+    # to simplify the link line.
+    OVERRIDE_BUILT_MODULE_PATH :=  \
+        $($(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)OUT_INTERMEDIATE_LIBRARIES)
+  endif
   ifeq ($(LOCAL_IS_HOST_MODULE)$(my_strip_module),)
     # Strip but not try to add debuglink
     my_strip_module := no_debuglink
@@ -70,6 +78,20 @@ else
   prebuilt_module_is_a_library :=
 endif
 
+ifeq ($(LOCAL_MODULE_MAKEFILE),$(SOONG_ANDROID_MK))
+  ifeq ($(prebuilt_module_is_a_library),true)
+    SOONG_ALREADY_CONV := $(SOONG_ALREADY_CONV) $(LOCAL_MODULE)
+  endif
+
+  ifdef LOCAL_USE_VNDK
+    name_without_suffix := $(patsubst %.vendor,%,$(LOCAL_MODULE))
+    ifneq ($(name_without_suffix),$(LOCAL_MODULE)
+      SPLIT_VENDOR.$(LOCAL_MODULE_CLASS).$(name_without_suffix) := 1
+    endif
+    name_without_suffix :=
+  endif
+endif
+
 # Don't install static libraries by default.
 ifndef LOCAL_UNINSTALLABLE_MODULE
 ifeq (STATIC_LIBRARIES,$(LOCAL_MODULE_CLASS))
@@ -83,18 +105,39 @@ else
   prebuilt_module_is_dex_javalib :=
 endif
 
-ifeq ($(LOCAL_MODULE_CLASS),APPS)
-LOCAL_BUILT_MODULE_STEM := package.apk
-ifndef LOCAL_INSTALLED_MODULE_STEM
-LOCAL_INSTALLED_MODULE_STEM := $(LOCAL_MODULE).apk
+ifdef LOCAL_COMPRESSED_MODULE
+ifneq (true,$(LOCAL_COMPRESSED_MODULE))
+$(call pretty-error, Unknown value for LOCAL_COMPRESSED_MODULE $(LOCAL_COMPRESSED_MODULE))
 endif
 endif
 
-ifneq ($(filter true no_debuglink,$(my_strip_module) $(my_pack_module_relocations)),)
+ifeq ($(LOCAL_MODULE_CLASS),APPS)
+ifdef LOCAL_COMPRESSED_MODULE
+LOCAL_BUILT_MODULE_STEM := package.apk.gz
+else
+LOCAL_BUILT_MODULE_STEM := package.apk
+endif  # LOCAL_COMPRESSED_MODULE
+
+ifndef LOCAL_INSTALLED_MODULE_STEM
+ifdef LOCAL_COMPRESSED_MODULE
+PACKAGES.$(LOCAL_MODULE).COMPRESSED := gz
+LOCAL_INSTALLED_MODULE_STEM := $(LOCAL_MODULE).apk.gz
+else
+LOCAL_INSTALLED_MODULE_STEM := $(LOCAL_MODULE).apk
+endif  # LOCAL_COMPRESSED_MODULE
+endif  # LOCAL_INSTALLED_MODULE_STEM
+
+else  # $(LOCAL_MODULE_CLASS) != APPS)
+ifdef LOCAL_COMPRESSED_MODULE
+$(error $(LOCAL_MODULE) : LOCAL_COMPRESSED_MODULE can only be defined for module class APPS)
+endif  # LOCAL_COMPRESSED_MODULE
+endif
+
+ifneq ($(filter true keep_symbols no_debuglink mini-debug-info,$(my_strip_module) $(my_pack_module_relocations)),)
   ifdef LOCAL_IS_HOST_MODULE
     $(error Cannot strip/pack host module LOCAL_PATH=$(LOCAL_PATH))
   endif
-  ifeq ($(filter SHARED_LIBRARIES EXECUTABLES,$(LOCAL_MODULE_CLASS)),)
+  ifeq ($(filter SHARED_LIBRARIES EXECUTABLES NATIVE_TESTS,$(LOCAL_MODULE_CLASS)),)
     $(error Can strip/pack only shared libraries or executables LOCAL_PATH=$(LOCAL_PATH))
   endif
   ifneq ($(LOCAL_PREBUILT_STRIP_COMMENTS),)
@@ -112,19 +155,38 @@ else  # my_strip_module and my_pack_module_relocations not true
 
 ifdef prebuilt_module_is_a_library
 export_includes := $(intermediates)/export_includes
-$(export_includes): PRIVATE_EXPORT_C_INCLUDE_DIRS := $(LOCAL_EXPORT_C_INCLUDE_DIRS)
-$(export_includes) : $(LOCAL_MODULE_MAKEFILE_DEP)
+export_cflags := $(foreach d,$(LOCAL_EXPORT_C_INCLUDE_DIRS),-I $(d))
+# Soong exports cflags instead of include dirs, so that -isystem can be included.
+ifeq ($(LOCAL_MODULE_MAKEFILE),$(SOONG_ANDROID_MK))
+export_cflags += $(LOCAL_EXPORT_CFLAGS)
+else ifdef LOCAL_EXPORT_CFLAGS
+$(call pretty-error,LOCAL_EXPORT_CFLAGS can only be used by Soong, use LOCAL_EXPORT_C_INCLUDE_DIRS instead)
+endif
+$(export_includes): PRIVATE_EXPORT_CFLAGS := $(export_cflags)
+$(export_includes): $(LOCAL_EXPORT_C_INCLUDE_DEPS)
 	@echo Export includes file: $< -- $@
 	$(hide) mkdir -p $(dir $@) && rm -f $@
-ifdef LOCAL_EXPORT_C_INCLUDE_DIRS
-	$(hide) for d in $(PRIVATE_EXPORT_C_INCLUDE_DIRS); do \
-	        echo "-I $$d" >> $@; \
-	        done
+ifdef export_cflags
+	$(hide) echo "$(PRIVATE_EXPORT_CFLAGS)" >$@
 else
 	$(hide) touch $@
 endif
+export_cflags :=
 
-$(LOCAL_BUILT_MODULE) : | $(intermediates)/export_includes
+ifdef LOCAL_SDK_VERSION
+my_link_type := native:ndk
+else ifdef LOCAL_USE_VNDK
+my_link_type := native:vendor
+else
+my_link_type := native:platform
+endif
+
+# TODO: check dependencies of prebuilt files
+my_link_deps :=
+
+my_2nd_arch_prefix := $(LOCAL_2ND_ARCH_VAR_PREFIX)
+my_common :=
+include $(BUILD_SYSTEM)/link_type.mk
 endif  # prebuilt_module_is_a_library
 
 # The real dependency will be added after all Android.mks are loaded and the install paths
@@ -134,6 +196,12 @@ ifdef LOCAL_SHARED_LIBRARIES
 my_shared_libraries := $(LOCAL_SHARED_LIBRARIES)
 # Extra shared libraries introduced by LOCAL_CXX_STL.
 include $(BUILD_SYSTEM)/cxx_stl_setup.mk
+ifdef LOCAL_USE_VNDK
+  ifneq ($(LOCAL_MODULE_MAKEFILE),$(SOONG_ANDROID_MK))
+    my_shared_libraries := $(foreach l,$(my_shared_libraries),\
+      $(if $(SPLIT_VENDOR.SHARED_LIBRARIES.$(l)),$(l).vendor,$(l)))
+  endif
+endif
 $(LOCAL_2ND_ARCH_VAR_PREFIX)$(my_prefix)DEPENDENCIES_ON_SHARED_LIBRARIES += \
   $(my_register_name):$(LOCAL_INSTALLED_MODULE):$(subst $(space),$(comma),$(my_shared_libraries))
 
@@ -150,6 +218,34 @@ endif
 # We need to enclose the above export_includes and my_built_shared_libraries in
 # "my_strip_module not true" because otherwise the rules are defined in dynamic_binary.mk.
 endif  # my_strip_module not true
+
+ifeq ($(NATIVE_COVERAGE),true)
+ifneq (,$(strip $(LOCAL_PREBUILT_COVERAGE_ARCHIVE)))
+  $(eval $(call copy-one-file,$(LOCAL_PREBUILT_COVERAGE_ARCHIVE),$(intermediates)/$(LOCAL_MODULE).gcnodir))
+  ifneq ($(LOCAL_UNINSTALLABLE_MODULE),true)
+    ifdef LOCAL_IS_HOST_MODULE
+      my_coverage_path := $($(my_prefix)OUT_COVERAGE)/$(patsubst $($(my_prefix)OUT)/%,%,$(my_module_path))
+    else
+      my_coverage_path := $(TARGET_OUT_COVERAGE)/$(patsubst $(PRODUCT_OUT)/%,%,$(my_module_path))
+    endif
+    my_coverage_path := $(my_coverage_path)/$(basename $(my_installed_module_stem)).gcnodir
+    $(eval $(call copy-one-file,$(LOCAL_PREBUILT_COVERAGE_ARCHIVE),$(my_coverage_path)))
+    $(LOCAL_BUILT_MODULE): $(my_coverage_path)
+  endif
+else
+# Coverage information is needed when static lib is a dependency of another
+# coverage-enabled module.
+ifeq (STATIC_LIBRARIES, $(LOCAL_MODULE_CLASS))
+GCNO_ARCHIVE := $(LOCAL_MODULE).gcnodir
+$(intermediates)/$(GCNO_ARCHIVE) : PRIVATE_ALL_OBJECTS :=
+$(intermediates)/$(GCNO_ARCHIVE) : PRIVATE_ALL_WHOLE_STATIC_LIBRARIES :=
+$(intermediates)/$(GCNO_ARCHIVE) : PRIVATE_PREFIX := $(my_prefix)
+$(intermediates)/$(GCNO_ARCHIVE) : PRIVATE_2ND_ARCH_VAR_PREFIX := $(LOCAL_2ND_ARCH_VAR_PREFIX)
+$(intermediates)/$(GCNO_ARCHIVE) :
+	$(transform-o-to-static-lib)
+endif
+endif
+endif
 
 ifeq ($(LOCAL_MODULE_CLASS),APPS)
 PACKAGES.$(LOCAL_MODULE).OVERRIDES := $(strip $(LOCAL_OVERRIDES_PACKAGES))
@@ -185,7 +281,14 @@ $(my_extracted_apk): $(my_prebuilt_src_file)
 my_prebuilt_src_file := $(my_extracted_apk)
 my_extracted_apk :=
 my_extract_apk :=
+ifeq ($(PRODUCT_ALWAYS_PREOPT_EXTRACTED_APK),true)
+# If the product property is set, always preopt for extracted modules to prevent executing out of
+# the APK.
+my_preopt_for_extracted_apk := true
 endif
+endif
+
+dex_preopt_profile_src_file := $(my_prebuilt_src_file)
 
 rs_compatibility_jni_libs :=
 include $(BUILD_SYSTEM)/install_jni_libs.mk
@@ -200,6 +303,7 @@ ifeq ($(LOCAL_CERTIFICATE),EXTERNAL)
   LOCAL_CERTIFICATE := $(DEFAULT_SYSTEM_DEV_CERTIFICATE)
   PACKAGES.$(LOCAL_MODULE).EXTERNAL_KEY := 1
 
+  $(built_module) : $(LOCAL_CERTIFICATE).pk8 $(LOCAL_CERTIFICATE).x509.pem
   $(built_module) : PRIVATE_PRIVATE_KEY := $(LOCAL_CERTIFICATE).pk8
   $(built_module) : PRIVATE_CERTIFICATE := $(LOCAL_CERTIFICATE).x509.pem
 endif
@@ -226,6 +330,7 @@ else
   PACKAGES.$(LOCAL_MODULE).CERTIFICATE := $(LOCAL_CERTIFICATE).x509.pem
   PACKAGES := $(PACKAGES) $(LOCAL_MODULE)
 
+  $(built_module) : $(LOCAL_CERTIFICATE).pk8 $(LOCAL_CERTIFICATE).x509.pem
   $(built_module) : PRIVATE_PRIVATE_KEY := $(LOCAL_CERTIFICATE).pk8
   $(built_module) : PRIVATE_CERTIFICATE := $(LOCAL_CERTIFICATE).x509.pem
 endif
@@ -237,8 +342,9 @@ LOCAL_DEX_PREOPT := false
 endif
 endif
 
-# Disable dex-preopt of specific prebuilts to save space, if requested.
-ifneq ($(filter $(DEXPREOPT_BLACKLIST),$(LOCAL_MODULE)),)
+# If the module is a compressed module, we don't pre-opt it because its final
+# installation location will be the data partition.
+ifdef LOCAL_COMPRESSED_MODULE
 LOCAL_DEX_PREOPT := false
 endif
 
@@ -248,7 +354,7 @@ include $(BUILD_SYSTEM)/dex_preopt_odex_install.mk
 #######################################
 ifneq ($(LOCAL_REPLACE_PREBUILT_APK_INSTALLED),)
 # There is a replacement for the prebuilt .apk we can install without any processing.
-$(built_module) : $(LOCAL_REPLACE_PREBUILT_APK_INSTALLED) | $(ACP)
+$(built_module) : $(LOCAL_REPLACE_PREBUILT_APK_INSTALLED)
 	$(transform-prebuilt-to-target)
 
 else  # ! LOCAL_REPLACE_PREBUILT_APK_INSTALLED
@@ -266,11 +372,13 @@ embedded_prebuilt_jni_libs := 'lib/*.so'
 endif
 $(built_module): PRIVATE_EMBEDDED_JNI_LIBS := $(embedded_prebuilt_jni_libs)
 
-$(built_module) : $(my_prebuilt_src_file) | $(ACP) $(ZIPALIGN) $(SIGNAPK_JAR) $(AAPT)
-	$(transform-prebuilt-to-target)
-ifneq ($(LOCAL_MODULE_PATH),$(TARGET_OUT_VENDOR)/bundled-app)
-	$(uncompress-shared-libs)
+ifdef LOCAL_COMPRESSED_MODULE
+$(built_module) : $(MINIGZIP)
 endif
+
+$(built_module) : $(my_prebuilt_src_file) | $(ZIPALIGN) $(SIGNAPK_JAR)
+	$(transform-prebuilt-to-target)
+	$(uncompress-shared-libs)
 ifdef LOCAL_DEX_PREOPT
 ifneq ($(BUILD_PLATFORM_ZIP),)
 	@# Keep a copy of apk with classes.dex unstripped
@@ -289,6 +397,9 @@ endif  # LOCAL_DEX_PREOPT
 else  # LOCAL_CERTIFICATE == PRESIGNED
 	$(align-package)
 endif  # LOCAL_CERTIFICATE
+ifdef LOCAL_COMPRESSED_MODULE
+	$(compress-package)
+endif  # LOCAL_COMPRESSED_MODULE
 endif  # ! LOCAL_REPLACE_PREBUILT_APK_INSTALLED
 
 ###############################
@@ -301,8 +412,12 @@ endif
 ###############################
 ## Install split apks.
 ifdef LOCAL_PACKAGE_SPLITS
+ifdef LOCAL_COMPRESSED_MODULE
+$(error $(LOCAL_MODULE): LOCAL_COMPRESSED_MODULE is not currently supported for split installs)
+endif  # LOCAL_COMPRESSED_MODULE
+
 # LOCAL_PACKAGE_SPLITS is a list of apks to be installed.
-built_apk_splits := $(addprefix $(built_module_path)/,$(notdir $(LOCAL_PACKAGE_SPLITS)))
+built_apk_splits := $(addprefix $(intermediates)/,$(notdir $(LOCAL_PACKAGE_SPLITS)))
 installed_apk_splits := $(addprefix $(my_module_path)/,$(notdir $(LOCAL_PACKAGE_SPLITS)))
 
 # Rules to sign the split apks.
@@ -312,29 +427,29 @@ $(error You must put all the split source apks in the same folder: $(LOCAL_PACKA
 endif
 my_src_dir := $(LOCAL_PATH)/$(my_src_dir)
 
+$(built_apk_splits) : $(LOCAL_CERTIFICATE).pk8 $(LOCAL_CERTIFICATE).x509.pem
 $(built_apk_splits) : PRIVATE_PRIVATE_KEY := $(LOCAL_CERTIFICATE).pk8
 $(built_apk_splits) : PRIVATE_CERTIFICATE := $(LOCAL_CERTIFICATE).x509.pem
-$(built_apk_splits) : $(built_module_path)/%.apk : $(my_src_dir)/%.apk | $(ACP) $(AAPT)
+$(built_apk_splits) : $(intermediates)/%.apk : $(my_src_dir)/%.apk
 	$(copy-file-to-new-target)
 	$(sign-package)
 
 # Rules to install the split apks.
-$(installed_apk_splits) : $(my_module_path)/%.apk : $(built_module_path)/%.apk | $(ACP)
+$(installed_apk_splits) : $(my_module_path)/%.apk : $(intermediates)/%.apk
 	@echo "Install: $@"
 	$(copy-file-to-new-target)
 
 # Register the additional built and installed files.
 ALL_MODULES.$(my_register_name).INSTALLED += $(installed_apk_splits)
 ALL_MODULES.$(my_register_name).BUILT_INSTALLED += \
-  $(foreach s,$(LOCAL_PACKAGE_SPLITS),$(built_module_path)/$(notdir $(s)):$(my_module_path)/$(notdir $(s)))
+  $(foreach s,$(LOCAL_PACKAGE_SPLITS),$(intermediates)/$(notdir $(s)):$(my_module_path)/$(notdir $(s)))
 
 # Make sure to install the splits when you run "make <module_name>".
-$(my_register_name): $(installed_apk_splits)
+$(my_all_targets): $(installed_apk_splits)
 
 endif # LOCAL_PACKAGE_SPLITS
 
-else # LOCAL_MODULE_CLASS != APPS
-ifeq ($(prebuilt_module_is_dex_javalib),true)
+else ifeq ($(prebuilt_module_is_dex_javalib),true)  # ! LOCAL_MODULE_CLASS != APPS
 # This is a target shared library, i.e. a jar with classes.dex.
 #######################################
 # defines built_odex along with rule to install odex
@@ -344,7 +459,7 @@ ifdef LOCAL_DEX_PREOPT
 ifneq ($(dexpreopt_boot_jar_module),) # boot jar
 # boot jar's rules are defined in dex_preopt.mk
 dexpreopted_boot_jar := $(DEXPREOPT_BOOT_JAR_DIR_FULL_PATH)/$(dexpreopt_boot_jar_module)_nodex.jar
-$(built_module) : $(dexpreopted_boot_jar) | $(ACP)
+$(built_module) : $(dexpreopted_boot_jar)
 	$(call copy-file-to-target)
 
 # For libart boot jars, we don't have .odex files.
@@ -355,53 +470,71 @@ $(built_odex) : $(dir $(LOCAL_BUILT_MODULE))% : $(my_prebuilt_src_file)
 	@echo "Dexpreopt Jar: $(PRIVATE_MODULE) ($@)"
 	$(call dexpreopt-one-file,$<,$@)
 
-$(built_module) : $(my_prebuilt_src_file) | $(ACP)
+$(built_module) : $(my_prebuilt_src_file)
 	$(call copy-file-to-target)
 ifneq (nostripping,$(LOCAL_DEX_PREOPT))
 	$(call dexpreopt-remove-classes.dex,$@)
 endif
 endif # boot jar
 else # ! LOCAL_DEX_PREOPT
-$(built_module) : $(my_prebuilt_src_file) | $(ACP)
+$(built_module) : $(my_prebuilt_src_file)
 	$(call copy-file-to-target)
 endif # LOCAL_DEX_PREOPT
 
 else  # ! prebuilt_module_is_dex_javalib
+$(built_module) : $(my_prebuilt_src_file)
 ifneq ($(LOCAL_PREBUILT_STRIP_COMMENTS),)
-$(built_module) : $(my_prebuilt_src_file)
 	$(transform-prebuilt-to-target-strip-comments)
-ifeq ($(LOCAL_MODULE_CLASS),EXECUTABLES)
-	$(hide) chmod +x $@
-endif
-else ifneq ($(LOCAL_ACP_UNAVAILABLE),true)
-$(built_module) : $(my_prebuilt_src_file) | $(ACP)
-	$(transform-prebuilt-to-target)
-ifeq ($(LOCAL_MODULE_CLASS),EXECUTABLES)
-	$(hide) chmod +x $@
-endif
 else
-$(built_module) : $(my_prebuilt_src_file)
-	$(copy-file-to-target-with-cp)
-ifeq ($(LOCAL_MODULE_CLASS),EXECUTABLES)
-	$(hide) chmod +x $@
+	$(transform-prebuilt-to-target)
 endif
+ifneq ($(filter EXECUTABLES NATIVE_TESTS,$(LOCAL_MODULE_CLASS)),)
+	$(hide) chmod +x $@
 endif
 endif # ! prebuilt_module_is_dex_javalib
-endif # LOCAL_MODULE_CLASS != APPS
 
 ifeq ($(LOCAL_MODULE_CLASS),JAVA_LIBRARIES)
 my_src_jar := $(my_prebuilt_src_file)
-ifeq ($(LOCAL_IS_HOST_MODULE),)
+
+ifdef LOCAL_IS_HOST_MODULE
+# for host java libraries deps should be in the common dir, so we make a copy in
+# the common dir.
+common_classes_jar := $(intermediates.COMMON)/classes.jar
+
+$(common_classes_jar): PRIVATE_MODULE := $(LOCAL_MODULE)
+$(common_classes_jar): PRIVATE_PREFIX := $(my_prefix)
+
+$(common_classes_jar) : $(my_src_jar)
+	$(transform-prebuilt-to-target)
+
+else # !LOCAL_IS_HOST_MODULE
 # for target java libraries, the LOCAL_BUILT_MODULE is in a product-specific dir,
 # while the deps should be in the common dir, so we make a copy in the common dir.
 common_classes_jar := $(intermediates.COMMON)/classes.jar
+common_classes_pre_proguard_jar := $(intermediates.COMMON)/classes-pre-proguard.jar
 common_javalib_jar := $(intermediates.COMMON)/javalib.jar
 
-$(common_classes_jar) $(common_javalib_jar): PRIVATE_MODULE := $(LOCAL_MODULE)
+$(common_classes_jar) $(common_classes_pre_proguard_jar) $(common_javalib_jar): PRIVATE_MODULE := $(LOCAL_MODULE)
+$(common_classes_jar) $(common_classes_pre_proguard_jar) $(common_javalib_jar): PRIVATE_PREFIX := $(my_prefix)
+
+ifeq ($(LOCAL_SDK_VERSION),system_current)
+my_link_type := java:system
+else ifneq ($(LOCAL_SDK_VERSION),)
+my_link_type := java:sdk
+else
+my_link_type := java:platform
+endif
+
+# TODO: check dependencies of prebuilt files
+my_link_deps :=
+
+my_2nd_arch_prefix := $(LOCAL_2ND_ARCH_VAR_PREFIX)
+my_common := COMMON
+include $(BUILD_SYSTEM)/link_type.mk
 
 ifeq ($(prebuilt_module_is_dex_javalib),true)
 # For prebuilt shared Java library we don't have classes.jar.
-$(common_javalib_jar) : $(my_src_jar) | $(ACP)
+$(common_javalib_jar) : $(my_src_jar)
 	$(transform-prebuilt-to-target)
 
 else  # ! prebuilt_module_is_dex_javalib
@@ -412,29 +545,54 @@ ifneq ($(my_src_aar),)
 my_src_jar := $(intermediates.COMMON)/aar/classes.jar
 
 $(my_src_jar) : $(my_src_aar)
-	$(hide) rm -rf $(dir $@) && mkdir -p $(dir $@)
+	$(hide) rm -rf $(dir $@) && mkdir -p $(dir $@) $(dir $@)/res
 	$(hide) unzip -qo -d $(dir $@) $<
 	# Make sure the extracted classes.jar has a new timestamp.
 	$(hide) touch $@
 
 endif
 
-$(common_classes_jar) : $(my_src_jar) | $(ACP)
+$(common_classes_jar) : $(my_src_jar)
 	$(transform-prebuilt-to-target)
 
-$(common_javalib_jar) : $(common_classes_jar) | $(ACP)
+$(common_classes_pre_proguard_jar) : $(my_src_jar)
+	$(transform-prebuilt-to-target)
+
+$(common_javalib_jar) : $(common_classes_jar)
 	$(transform-prebuilt-to-target)
 
 $(call define-jar-to-toc-rule, $(common_classes_jar))
 
 ifdef LOCAL_USE_AAPT2
 ifneq ($(my_src_aar),)
+LOCAL_SDK_RES_VERSION:=$(strip $(LOCAL_SDK_RES_VERSION))
+ifeq ($(LOCAL_SDK_RES_VERSION),)
+  LOCAL_SDK_RES_VERSION:=$(LOCAL_SDK_VERSION)
+endif
+
+framework_res_package_export :=
+framework_res_package_export_deps :=
+# Please refer to package.mk
+ifneq ($(LOCAL_NO_STANDARD_LIBRARIES),true)
+ifneq ($(filter-out current system_current test_current,$(LOCAL_SDK_RES_VERSION))$(if $(TARGET_BUILD_APPS),$(filter current system_current test_current,$(LOCAL_SDK_RES_VERSION))),)
+framework_res_package_export := \
+    $(HISTORICAL_SDK_VERSIONS_ROOT)/$(LOCAL_SDK_RES_VERSION)/android.jar
+framework_res_package_export_deps := $(framework_res_package_export)
+else
+framework_res_package_export := \
+    $(call intermediates-dir-for,APPS,framework-res,,COMMON)/package-export.apk
+framework_res_package_export_deps := \
+    $(dir $(framework_res_package_export))src/R.stamp
+endif
+endif
+
 my_res_package := $(intermediates.COMMON)/package-res.apk
 
 # We needed only very few PRIVATE variables and aapt2.mk input variables. Reset the unnecessary ones.
 $(my_res_package): PRIVATE_AAPT2_CFLAGS :=
+$(my_res_package): PRIVATE_AAPT_FLAGS := --static-lib --no-static-lib-packages
 $(my_res_package): PRIVATE_ANDROID_MANIFEST := $(intermediates.COMMON)/aar/AndroidManifest.xml
-$(my_res_package): PRIVATE_AAPT_INCLUDES :=
+$(my_res_package): PRIVATE_AAPT_INCLUDES := $(framework_res_package_export)
 $(my_res_package): PRIVATE_SOURCE_INTERMEDIATES_DIR :=
 $(my_res_package): PRIVATE_PROGUARD_OPTIONS_FILE :=
 $(my_res_package): PRIVATE_DEFAULT_APP_TARGET_SDK :=
@@ -442,11 +600,12 @@ $(my_res_package): PRIVATE_DEFAULT_APP_TARGET_SDK :=
 $(my_res_package): PRIVATE_PRODUCT_AAPT_CONFIG :=
 $(my_res_package): PRIVATE_PRODUCT_AAPT_PREF_CONFIG :=
 $(my_res_package): PRIVATE_TARGET_AAPT_CHARACTERISTICS :=
+$(my_res_package) : $(framework_res_package_export_deps)
 
 full_android_manifest :=
 my_res_resources :=
 my_overlay_resources :=
-my_compiled_res_base_dir :=
+my_compiled_res_base_dir := $(intermediates.COMMON)/flat-res
 R_file_stamp :=
 proguard_options_file :=
 my_generated_res_dirs := $(intermediates.COMMON)/aar/res
@@ -464,25 +623,27 @@ endif # ! prebuilt_module_is_dex_javalib
 endif # LOCAL_IS_HOST_MODULE is not set
 
 ifneq ($(prebuilt_module_is_dex_javalib),true)
-ifneq ($(LOCAL_JILL_FLAGS),)
-$(error LOCAL_JILL_FLAGS is not supported any more, please use jack options in LOCAL_JACK_FLAGS instead)
-endif
 
+ifdef LOCAL_JACK_ENABLED
 # We may be building classes.jack from a host jar for host dalvik Java library.
 $(intermediates.COMMON)/classes.jack : PRIVATE_JACK_FLAGS:=$(LOCAL_JACK_FLAGS)
-$(intermediates.COMMON)/classes.jack : PRIVATE_JACK_MIN_SDK_VERSION := 1
-$(intermediates.COMMON)/classes.jack : $(my_src_jar) $(LOCAL_MODULE_MAKEFILE_DEP) \
-        $(LOCAL_ADDITIONAL_DEPENDENCIES) $(JACK) | setup-jack-server
+$(intermediates.COMMON)/classes.jack : PRIVATE_JACK_MIN_SDK_VERSION := $(if $(strip $(LOCAL_MIN_SDK_VERSION)),$(LOCAL_MIN_SDK_VERSION),1)
+$(intermediates.COMMON)/classes.jack : PRIVATE_JACK_PLUGIN_PATH := $(LOCAL_JACK_PLUGIN_PATH)
+$(intermediates.COMMON)/classes.jack : PRIVATE_JACK_PLUGIN := $(LOCAL_JACK_PLUGIN)
+$(intermediates.COMMON)/classes.jack : $(LOCAL_JACK_PLUGIN_PATH) $(my_src_jar) \
+        $(LOCAL_ADDITIONAL_DEPENDENCIES) $(JACK_DEFAULT_ARGS) $(JACK) \
+        | setup-jack-server
 	$(transform-jar-to-jack)
 
 # Update timestamps of .toc files for prebuilts so dependents will be
 # always rebuilt.
 $(intermediates.COMMON)/classes.dex.toc: $(intermediates.COMMON)/classes.jack
 	touch $@
-
+endif # LOCAL_JACK_ENABLED
 endif # ! prebuilt_module_is_dex_javalib
 endif # JAVA_LIBRARIES
 
-$(built_module) : $(LOCAL_MODULE_MAKEFILE_DEP) $(LOCAL_ADDITIONAL_DEPENDENCIES)
+$(built_module) : $(LOCAL_ADDITIONAL_DEPENDENCIES)
 
 my_prebuilt_src_file :=
+my_preopt_for_extracted_apk :=

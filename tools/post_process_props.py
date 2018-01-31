@@ -14,35 +14,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os, sys
+import sys
 
 # Usage: post_process_props.py file.prop [blacklist_key, ...]
 # Blacklisted keys are removed from the property file, if present
 
-# See PROP_NAME_MAX and PROP_VALUE_MAX system_properties.h.
-# The constants in system_properties.h includes the termination NUL,
-# so we decrease the values by 1 here.
-PROP_NAME_MAX = 31
+# See PROP_VALUE_MAX in system_properties.h.
+# The constant in system_properties.h includes the terminating NUL,
+# so we decrease the value by 1 here.
 PROP_VALUE_MAX = 91
 
 # Put the modifications that you need to make into the /system/build.prop into this
 # function. The prop object has get(name) and put(name,value) methods.
-def mangle_build_prop(prop, overrides):
-  if len(overrides) == 0:
-    return
-  overridelist = overrides.replace(" ",",").split(",")
-  for proppair in overridelist:
-    values = proppair.split("=")
-    prop.put(values[0], values[1])
-
+def mangle_build_prop(prop):
   pass
 
-# Put the modifications that you need to make into the /default.prop into this
+# Put the modifications that you need to make into /vendor/default.prop and
+# /odm/default.prop into this function. The prop object has get(name) and
+# put(name,value) methods.
+def mangle_default_prop_override(prop):
+  pass
+
+# Put the modifications that you need to make into the /system/etc/prop.default into this
 # function. The prop object has get(name) and put(name,value) methods.
 def mangle_default_prop(prop):
-  # If ro.adb.secure is not 1, then enable adb on USB by default
-  # (this is for eng builds)
-  if prop.get("ro.adb.secure") != "1":
+  # If ro.debuggable is 1, then enable adb on USB by default
+  # (this is for userdebug builds)
+  if prop.get("ro.debuggable") == "1":
     val = prop.get("persist.sys.usb.config")
     if "adb" not in val:
       if val == "":
@@ -66,12 +64,7 @@ def validate(prop):
   buildprops = prop.to_dict()
   for key, value in buildprops.iteritems():
     # Check build properties' length.
-    if len(key) > PROP_NAME_MAX:
-      check_pass = False
-      sys.stderr.write("error: %s cannot exceed %d bytes: " %
-                       (key, PROP_NAME_MAX))
-      sys.stderr.write("%s (%d)\n" % (key, len(key)))
-    if len(value) > PROP_VALUE_MAX:
+    if len(value) > PROP_VALUE_MAX and not key.startswith("ro."):
       check_pass = False
       sys.stderr.write("error: %s cannot exceed %d bytes: " %
                        (key, PROP_VALUE_MAX))
@@ -118,10 +111,6 @@ class PropFile:
 
 def main(argv):
   filename = argv[1]
-  if (len(argv) > 2):
-    extraargs = argv[2]
-  else:
-    extraargs = ""
   f = open(filename)
   lines = f.readlines()
   f.close()
@@ -129,8 +118,12 @@ def main(argv):
   properties = PropFile(lines)
 
   if filename.endswith("/build.prop"):
-    mangle_build_prop(properties, extraargs)
-  elif filename.endswith("/default.prop"):
+    mangle_build_prop(properties)
+  elif (filename.endswith("/vendor/default.prop") or
+        filename.endswith("/odm/default.prop")):
+    mangle_default_prop_override(properties)
+  elif (filename.endswith("/default.prop") or # legacy
+        filename.endswith("/prop.default")):
     mangle_default_prop(properties)
   else:
     sys.stderr.write("bad command line: " + str(argv) + "\n")
@@ -140,7 +133,7 @@ def main(argv):
     sys.exit(1)
 
   # Drop any blacklisted keys
-  for key in argv[3:]:
+  for key in argv[2:]:
     properties.delete(key)
 
   f = open(filename, 'w+')

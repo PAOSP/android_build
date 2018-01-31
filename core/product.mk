@@ -91,11 +91,12 @@ _product_var_list := \
     PRODUCT_DEFAULT_PROPERTY_OVERRIDES \
     PRODUCT_CHARACTERISTICS \
     PRODUCT_COPY_FILES \
-    PRODUCT_COPY_FILES_OVERRIDES \
     PRODUCT_OTA_PUBLIC_KEYS \
     PRODUCT_EXTRA_RECOVERY_KEYS \
     PRODUCT_PACKAGE_OVERLAYS \
     DEVICE_PACKAGE_OVERLAYS \
+    PRODUCT_ENFORCE_RRO_EXCLUDED_OVERLAYS \
+    PRODUCT_ENFORCE_RRO_TARGETS \
     PRODUCT_SDK_ATREE_FILES \
     PRODUCT_SDK_ADDON_NAME \
     PRODUCT_SDK_ADDON_COPY_FILES \
@@ -113,19 +114,36 @@ _product_var_list := \
     PRODUCT_SUPPORTS_VERITY_FEC \
     PRODUCT_OEM_PROPERTIES \
     PRODUCT_SYSTEM_PROPERTY_BLACKLIST \
+    PRODUCT_SYSTEM_SERVER_APPS \
     PRODUCT_SYSTEM_SERVER_JARS \
+    PRODUCT_ALWAYS_PREOPT_EXTRACTED_APK \
+    PRODUCT_DEXPREOPT_SPEED_APPS \
     PRODUCT_VBOOT_SIGNING_KEY \
     PRODUCT_VBOOT_SIGNING_SUBKEY \
     PRODUCT_VERITY_SIGNING_KEY \
     PRODUCT_SYSTEM_VERITY_PARTITION \
     PRODUCT_VENDOR_VERITY_PARTITION \
+    PRODUCT_SYSTEM_SERVER_DEBUG_INFO \
     PRODUCT_DEX_PREOPT_MODULE_CONFIGS \
     PRODUCT_DEX_PREOPT_DEFAULT_FLAGS \
     PRODUCT_DEX_PREOPT_BOOT_FLAGS \
+    PRODUCT_DEX_PREOPT_PROFILE_DIR \
+    PRODUCT_DEX_PREOPT_BOOT_IMAGE_PROFILE_LOCATION \
+    PRODUCT_USE_PROFILE_FOR_BOOT_IMAGE \
+    PRODUCT_SYSTEM_SERVER_COMPILER_FILTER \
     PRODUCT_SANITIZER_MODULE_CONFIGS \
     PRODUCT_SYSTEM_BASE_FS_PATH \
     PRODUCT_VENDOR_BASE_FS_PATH \
     PRODUCT_SHIPPING_API_LEVEL \
+    VENDOR_PRODUCT_RESTRICT_VENDOR_FILES \
+    VENDOR_EXCEPTION_MODULES \
+    VENDOR_EXCEPTION_PATHS \
+    PRODUCT_ART_TARGET_INCLUDE_DEBUG_BUILD \
+    PRODUCT_ART_USE_READ_BARRIER \
+    PRODUCT_IOT \
+    PRODUCT_SYSTEM_HEADROOM \
+    PRODUCT_MINIMIZE_JAVA_DEBUG_INFO \
+    PRODUCT_INTEGER_OVERFLOW_EXCLUDE_PATHS \
 
 
 
@@ -340,39 +358,17 @@ _product_stash_var_list += \
 _product_stash_var_list += \
 	DEFAULT_SYSTEM_DEV_CERTIFICATE \
 	WITH_DEXPREOPT \
-	WITH_DEXPREOPT_BOOT_IMG_ONLY
-
-_product_stash_var_list += \
-	GLOBAL_CFLAGS_NO_OVERRIDE \
-	GLOBAL_CPPFLAGS_NO_OVERRIDE \
-	GLOBAL_CLANG_CFLAGS_NO_OVERRIDE \
+	WITH_DEXPREOPT_BOOT_IMG_AND_SYSTEM_SERVER_ONLY \
+	WITH_DEXPREOPT_APP_IMAGE
 
 #
-# Stash values of the variables in _product_stash_var_list.
-# $(1): Renamed prefix
+# Mark the variables in _product_stash_var_list as readonly
 #
-define stash-product-vars
+define readonly-product-vars
 $(foreach v,$(_product_stash_var_list), \
-        $(eval $(strip $(1))_$(call rot13,$(v)):=$$($$(v))) \
+	$(eval $(v) ?=) \
+	$(eval .KATI_READONLY := $(v)) \
  )
-endef
-
-#
-# Assert that the the variable stashed by stash-product-vars remains untouched.
-# $(1): The prefix as supplied to stash-product-vars
-#
-define assert-product-vars
-$(strip \
-  $(eval changed_variables:=)
-  $(foreach v,$(_product_stash_var_list), \
-    $(if $(call streq,$($(v)),$($(strip $(1))_$(call rot13,$(v)))),, \
-        $(eval $(warning $(v) has been modified: $($(v)))) \
-        $(eval $(warning previous value: $($(strip $(1))_$(call rot13,$(v))))) \
-        $(eval changed_variables := $(changed_variables) $(v))) \
-   ) \
-  $(if $(changed_variables),\
-    $(eval $(error The following variables have been changed: $(changed_variables))),)
-)
 endef
 
 define add-to-product-copy-files-if-exists

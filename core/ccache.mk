@@ -17,7 +17,7 @@
 ifneq ($(filter-out false,$(USE_CCACHE)),)
   # The default check uses size and modification time, causing false misses
   # since the mtime depends when the repo was checked out
-  export CCACHE_COMPILERCHECK := content
+  export CCACHE_COMPILERCHECK ?= content
 
   # See man page, optimizations to get more cache hits
   # implies that __DATE__ and __TIME__ are not critical for functionality.
@@ -30,9 +30,7 @@ ifneq ($(filter-out false,$(USE_CCACHE)),)
   # We don't really use system headers much so the rootdir is
   # fine; ensures these paths are relative for all Android trees
   # on a workstation.
-  ifeq ($(CCACHE_BASEDIR),)
-    export CCACHE_BASEDIR := $(ANDROID_BUILD_TOP)
-  endif
+  export CCACHE_BASEDIR := /
 
   # Workaround for ccache with clang.
   # See http://petereisentraut.blogspot.com/2011/09/ccache-and-clang-part-2.html

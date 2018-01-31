@@ -23,6 +23,10 @@ else
 JAVACC := $(ALTERNATE_JAVAC)
 endif
 
+JAVA := java
+JAVADOC := javadoc
+JAR := jar
+
 # The actual compiler can be wrapped by setting the JAVAC_WRAPPER var.
 ifdef JAVAC_WRAPPER
     ifneq ($(JAVAC_WRAPPER),$(firstword $(JAVACC)))
@@ -31,7 +35,7 @@ ifdef JAVAC_WRAPPER
 endif
 
 # Whatever compiler is on this system.
-COMMON_JAVAC := $(JAVACC) -J-Xmx1024M $(common_jdk_flags)
+COMMON_JAVAC := $(JAVACC) -J-Xmx2048M $(common_jdk_flags)
 
 # Eclipse.
 ifeq ($(CUSTOM_JAVA_COMPILER), eclipse)

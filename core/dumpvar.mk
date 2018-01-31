@@ -7,6 +7,7 @@ print_build_config_vars := \
   TARGET_PRODUCT \
   TARGET_BUILD_VARIANT \
   TARGET_BUILD_TYPE \
+  TARGET_PLATFORM_VERSION \
   TARGET_BUILD_APPS \
   TARGET_ARCH \
   TARGET_ARCH_VARIANT \
@@ -23,20 +24,8 @@ print_build_config_vars := \
   HOST_CROSS_2ND_ARCH \
   HOST_BUILD_TYPE \
   BUILD_ID \
-  OUT_DIR
-
-ifneq ($(RECOVERY_VARIANT),)
-print_build_config_vars += \
-  RECOVERY_VARIANT
-endif
-ifeq ($(WITH_SU),true)
-print_build_config_vars += \
-  WITH_SU
-endif
-ifeq ($(WITH_GMS),true)
-print_build_config_vars += \
-  WITH_GMS
-endif
+  OUT_DIR \
+  AUX_OS_VARIANT_LIST
 
 ifeq ($(TARGET_BUILD_PDK),true)
 print_build_config_vars += \
@@ -49,10 +38,15 @@ endif
 # what to add to the path given the config we have chosen.
 ifeq ($(CALLED_FROM_SETUP),true)
 
-ifneq ($(filter /%,$(HOST_OUT_EXECUTABLES)),)
-ABP:=$(HOST_OUT_EXECUTABLES)
+ifneq ($(filter /%,$(SOONG_HOST_OUT_EXECUTABLES)),)
+ABP := $(SOONG_HOST_OUT_EXECUTABLES)
 else
-ABP:=$(PWD)/$(HOST_OUT_EXECUTABLES)
+ABP := $(PWD)/$(SOONG_HOST_OUT_EXECUTABLES)
+endif
+ifneq ($(filter /%,$(HOST_OUT_EXECUTABLES)),)
+ABP := $(ABP):$(HOST_OUT_EXECUTABLES)
+else
+ABP := $(ABP):$(PWD)/$(HOST_OUT_EXECUTABLES)
 endif
 
 ANDROID_BUILD_PATHS := $(ABP)

@@ -2,8 +2,16 @@
 # TARGET_ARCH and TARGET_2ND_ARCH.
 # To build it for TARGET_2ND_ARCH in a 64bit product, use "LOCAL_MULTILIB := 32".
 
+$(call record-module-type,PACKAGE)
+
 my_prefix := TARGET_
 include $(BUILD_SYSTEM)/multilib.mk
+
+ifeq ($(TARGET_TRANSLATE_2ND_ARCH),true)
+  ifneq ($(TARGET_SUPPORTS_64_BIT_APPS)|$(my_module_multilib),|64)
+    my_module_multilib := first
+  endif
+endif
 
 ifeq ($(TARGET_SUPPORTS_32_BIT_APPS)|$(TARGET_SUPPORTS_64_BIT_APPS),true|true)
   # packages default to building for either architecture,

@@ -21,12 +21,15 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := signapk
 LOCAL_SRC_FILES := $(call all-java-files-under, src)
 LOCAL_JAR_MANIFEST := SignApk.mf
-LOCAL_STATIC_JAVA_LIBRARIES := bouncycastle-host bouncycastle-bcpkix-host conscrypt-host
+LOCAL_STATIC_JAVA_LIBRARIES := \
+    apksig \
+    bouncycastle-host \
+    bouncycastle-bcpkix-host \
+    conscrypt-host
 LOCAL_REQUIRED_MODULES := libconscrypt_openjdk_jni
 include $(BUILD_HOST_JAVA_LIBRARY)
 
 ifeq ($(TARGET_BUILD_APPS),)
-ifeq ($(BRILLO),)
 # The post-build signing tools need signapk.jar and its shared libraries,
 # but we don't need this if we're just doing unbundled apps.
 my_dist_files := $(LOCAL_INSTALLED_MODULE) \
@@ -34,5 +37,4 @@ my_dist_files := $(LOCAL_INSTALLED_MODULE) \
 
 $(call dist-for-goals,droidcore,$(my_dist_files))
 my_dist_files :=
-endif
 endif

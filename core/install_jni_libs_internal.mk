@@ -32,10 +32,10 @@ endif
 endif
 ifeq (stlport_shared,$(LOCAL_NDK_STL_VARIANT))
 my_jni_shared_libraries += \
-    $(HISTORICAL_NDK_VERSIONS_ROOT)/current/sources/cxx-stl/stlport/libs/$(TARGET_$(my_2nd_arch_prefix)CPU_ABI)/libstlport_shared.so
+    $(HISTORICAL_NDK_VERSIONS_ROOT)/$(LOCAL_NDK_VERSION)/sources/cxx-stl/stlport/libs/$(TARGET_$(my_2nd_arch_prefix)CPU_ABI)/libstlport_shared.so
 else ifeq (c++_shared,$(LOCAL_NDK_STL_VARIANT))
 my_jni_shared_libraries += \
-    $(HISTORICAL_NDK_VERSIONS_ROOT)/current/sources/cxx-stl/llvm-libc++/libs/$(TARGET_$(my_2nd_arch_prefix)CPU_ABI)/libc++_shared.so
+    $(HISTORICAL_NDK_VERSIONS_ROOT)/$(LOCAL_NDK_VERSION)/sources/cxx-stl/llvm-libc++/libs/$(TARGET_$(my_2nd_arch_prefix)CPU_ABI)/libc++_shared.so
 endif
 
 # Set the abi directory used by the local JNI shared libraries.
@@ -54,11 +54,14 @@ ifneq ($(my_jni_shared_libraries),)
 # The jni libaries will be installed to the system.img.
 my_jni_filenames := $(notdir $(my_jni_shared_libraries))
 # Make sure the JNI libraries get installed
-my_shared_library_path := $($(my_2nd_arch_prefix)TARGET_OUT$(partition_tag)_SHARED_LIBRARIES)
+my_shared_library_path := $(call get_non_asan_path,\
+  $($(my_2nd_arch_prefix)TARGET_OUT$(partition_tag)_SHARED_LIBRARIES))
 # Do not use order-only dependency, because we want to rebuild the image if an jni is updated.
 $(LOCAL_INSTALLED_MODULE) : $(addprefix $(my_shared_library_path)/, $(my_jni_filenames))
 
 # Create symlink in the app specific lib path
+# Skip creating this symlink when running the second part of a target sanitization build.
+ifndef SANITIZE_TARGET
 ifdef LOCAL_POST_INSTALL_CMD
 # Add a shell command separator
 LOCAL_POST_INSTALL_CMD += ;
@@ -70,6 +73,11 @@ LOCAL_POST_INSTALL_CMD += \
   mkdir -p $(my_app_lib_path) \
   $(foreach lib, $(my_jni_filenames), ;ln -sf $(my_symlink_target_dir)/$(lib) $(my_app_lib_path)/$(lib))
 $(LOCAL_INSTALLED_MODULE): PRIVATE_POST_INSTALL_CMD := $(LOCAL_POST_INSTALL_CMD)
+else
+ifdef LOCAL_POST_INSTALL_CMD
+$(LOCAL_INSTALLED_MODULE): PRIVATE_POST_INSTALL_CMD := $(LOCAL_POST_INSTALL_CMD)
+endif
+endif
 
 # Clear jni_shared_libraries to not embed it into the apk.
 my_jni_shared_libraries :=
@@ -98,3 +106,21 @@ $(LOCAL_INSTALLED_MODULE) : $(addprefix $(my_app_lib_path)/, $(notdir $(my_prebu
 endif  # my_embed_jni
 endif  # inner my_prebuilt_jni_libs
 endif  # outer my_prebuilt_jni_libs
+
+# Verify that all included libraries are built against the NDK
+ifneq ($(strip $(LOCAL_JNI_SHARED_LIBRARIES)),)
+ifneq ($(LOCAL_SDK_VERSION),)
+my_link_type := app:sdk
+my_warn_types := native:platform
+my_allowed_types := native:ndk
+else
+my_link_type := app:platform
+my_warn_types :=
+my_allowed_types := native:ndk native:platform native:vendor
+endif
+
+my_link_deps := $(addprefix SHARED_LIBRARIES:,$(LOCAL_JNI_SHARED_LIBRARIES))
+
+my_common :=
+include $(BUILD_SYSTEM)/link_type.mk
+endif
