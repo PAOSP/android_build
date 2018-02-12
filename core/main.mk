@@ -128,6 +128,10 @@ else
   endif
 endif
 
+#
+# -----------------------------------------------------------------
+# Add Lineage generic properties to the build properties.
+ADDITIONAL_BUILD_PROPERTIES += $(PRODUCT_GENERIC_PROPERTIES)
 
 # Bring in standard build system definitions.
 include $(BUILD_SYSTEM)/definitions.mk
@@ -235,7 +239,6 @@ endif
 ## user/userdebug ##
 
 user_variant := $(filter user userdebug,$(TARGET_BUILD_VARIANT))
-enable_target_debugging := true
 tags_to_install :=
 ifneq (,$(user_variant))
   # Target is secure in user builds.
@@ -264,6 +267,8 @@ else # !user_variant
   ADDITIONAL_DEFAULT_PROPERTIES += ro.secure=0
   # Allow mock locations by default for non user builds
   ADDITIONAL_DEFAULT_PROPERTIES += ro.allow.mock.location=1
+  # Enable ADB by default on non-user_variant
+  enable_target_debugging := true
 endif # !user_variant
 
 ifeq (true,$(strip $(enable_target_debugging)))
